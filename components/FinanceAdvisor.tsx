@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { getFinancialAdvice, getTextToSpeechAudio } from '../services/geminiService';
 import type { FinancialAdvice, Recommendation, GroundingChunk } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
@@ -17,31 +17,21 @@ const FinanceAdvisor: React.FC = () => {
     const [isSpeaking, setIsSpeaking] = useState(false);
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+    const audioQueueRef = useRef<string[]>([]);
+    const isStoppedManuallyRef = useRef<boolean>(false);
 
-    const stopPlayback = useCallback(() => {
-        if (audioSourceRef.current) {
-            audioSourceRef.current.stop();
-            audioSourceRef.current.disconnect();
-            audioSourceRef.current = null;
-        }
-        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-            audioContextRef.current.suspend();
-        }
-        setIsSpeaking(false);
-    }, []);
-    
-    const handleSpeak = async () => {
-        if (!advice) return;
-        if (isSpeaking) {
-            stopPlayback();
+    const playNextInQueue = useCallback(async () => {
+        if (isStoppedManuallyRef.current || audioQueueRef.current.length === 0) {
+            setIsSpeaking(false);
+            isStoppedManuallyRef.current = false;
             return;
         }
 
-        setIsSpeaking(true);
-        setError(null);
+        const text = audioQueueRef.current.shift();
+        if (!text) return;
+
         try {
-            const fullTextToSpeak = `${advice.summary} Here are the recommendations. ${advice.recommendations.map(r => `${r.category}: ${r.name}. Rationale: ${r.rationale}`).join('. ')}`;
-            const audioData = await getTextToSpeechAudio(fullTextToSpeak, language);
+            const audioData = await getTextToSpeechAudio(text, language);
             
             if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
                 audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -55,25 +45,64 @@ const FinanceAdvisor: React.FC = () => {
             const decodedBytes = decode(audioData);
             const audioBuffer = await decodeAudioData(decodedBytes, context, 24000, 1);
             
-            if (audioSourceRef.current) { // Stop any previous sound
-                audioSourceRef.current.stop();
-            }
-
             const source = context.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(context.destination);
             source.onended = () => {
-                setIsSpeaking(false);
                 audioSourceRef.current = null;
+                playNextInQueue(); // Automatically play the next chunk
             };
             source.start();
             audioSourceRef.current = source;
-            
         } catch (err) {
-            setError('Failed to generate or play audio.');
+            setError('Failed to generate or play audio for a segment.');
             setIsSpeaking(false);
         }
+    }, [language]);
+
+
+    const stopPlayback = useCallback(() => {
+        isStoppedManuallyRef.current = true;
+        audioQueueRef.current = [];
+        if (audioSourceRef.current) {
+            audioSourceRef.current.onended = null; // Prevent onended from triggering next playback
+            audioSourceRef.current.stop();
+            audioSourceRef.current.disconnect();
+            audioSourceRef.current = null;
+        }
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+             audioContextRef.current.suspend();
+        }
+        setIsSpeaking(false);
+    }, []);
+    
+    const handleSpeak = async () => {
+        if (!advice) return;
+        if (isSpeaking) {
+            stopPlayback();
+            return;
+        }
+
+        setError(null);
+        setIsSpeaking(true);
+        isStoppedManuallyRef.current = false;
+        
+        // Create logical chunks of text for smoother streaming
+        const textChunks = [
+            advice.summary,
+            ...advice.recommendations.map(r => `${r.category}: ${r.name}. ${r.rationale}`)
+        ];
+        
+        audioQueueRef.current = textChunks;
+        playNextInQueue();
     };
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            stopPlayback();
+        }
+    }, [stopPlayback]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();

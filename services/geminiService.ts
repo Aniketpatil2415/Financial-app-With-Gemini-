@@ -155,6 +155,21 @@ export const getChatResponse = async (message: string): Promise<string> => {
 
 export const getTextToSpeechAudio = async (text: string, language: string): Promise<string> => {
     try {
+        // Map language to a suitable voice. While specific language codes aren't used,
+        // we can select voices that may perform better for different languages.
+        let voiceName = 'Kore'; // Default voice with broad language support
+        switch (language.toLowerCase()) {
+            case 'english':
+                voiceName = 'Zephyr'; // A clear, standard voice often good for English.
+                break;
+            case 'hindi':
+                voiceName = 'Puck'; // Another voice with good multi-language support.
+                break;
+            case 'marathi':
+                voiceName = 'Kore'; // Known for its broad language capabilities.
+                break;
+        }
+
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: `In a clear, professional voice, say the following in ${language}: ${text}` }] }],
@@ -162,7 +177,7 @@ export const getTextToSpeechAudio = async (text: string, language: string): Prom
                 responseModalities: [Modality.AUDIO],
                 speechConfig: {
                     voiceConfig: {
-                        prebuiltVoiceConfig: { voiceName: 'Kore' }, // Kore has good multi-language support
+                        prebuiltVoiceConfig: { voiceName: voiceName },
                     },
                 },
             },

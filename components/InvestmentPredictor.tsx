@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { getInvestmentPrediction, getTextToSpeechAudio } from '../services/geminiService';
 import type { PortfolioPrediction, PortfolioAnalysisItem, GroundingChunk } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
@@ -15,12 +15,61 @@ const InvestmentPredictor: React.FC = () => {
     const [isSpeaking, setIsSpeaking] = useState(false);
     const audioContextRef = useRef<AudioContext | null>(null);
     const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+    const audioQueueRef = useRef<string[]>([]);
+    const isStoppedManuallyRef = useRef<boolean>(false);
+
+    const playNextInQueue = useCallback(async () => {
+        if (isStoppedManuallyRef.current || audioQueueRef.current.length === 0) {
+            setIsSpeaking(false);
+            isStoppedManuallyRef.current = false;
+            return;
+        }
+
+        const text = audioQueueRef.current.shift();
+        if (!text) return;
+
+        try {
+            const audioData = await getTextToSpeechAudio(text, language);
+            
+            if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+            }
+            const context = audioContextRef.current;
+            
+            if (context.state === 'suspended') {
+                await context.resume();
+            }
+            
+            const decodedBytes = decode(audioData);
+            const audioBuffer = await decodeAudioData(decodedBytes, context, 24000, 1);
+            
+            const source = context.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(context.destination);
+            source.onended = () => {
+                audioSourceRef.current = null;
+                playNextInQueue();
+            };
+            source.start();
+            audioSourceRef.current = source;
+        } catch (err) {
+            setError('Failed to generate or play audio for a segment.');
+            setIsSpeaking(false);
+        }
+    }, [language]);
+
 
     const stopPlayback = useCallback(() => {
+        isStoppedManuallyRef.current = true;
+        audioQueueRef.current = [];
         if (audioSourceRef.current) {
+            audioSourceRef.current.onended = null;
             audioSourceRef.current.stop();
             audioSourceRef.current.disconnect();
             audioSourceRef.current = null;
+        }
+        if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+            audioContextRef.current.suspend();
         }
         setIsSpeaking(false);
     }, []);
@@ -32,44 +81,26 @@ const InvestmentPredictor: React.FC = () => {
             return;
         }
 
-        setIsSpeaking(true);
         setError(null);
-        try {
-            const fullTextToSpeak = `Here is the overall summary of your portfolio prediction: ${prediction.overallSummary}`;
-            const audioData = await getTextToSpeechAudio(fullTextToSpeak, language);
-            
-            if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-            }
-            const context = audioContextRef.current;
+        setIsSpeaking(true);
+        isStoppedManuallyRef.current = false;
+        
+        const textChunks = [
+            `Here is the overall summary of your portfolio prediction: ${prediction.overallSummary}`,
+            ...prediction.portfolioAnalysis.map(item => `${item.name}. Analysis: ${item.currentAnalysis}. Outlook: ${item.futureOutlook}`)
+        ];
 
-            if (context.state === 'suspended') {
-                await context.resume();
-            }
-            
-            const decodedBytes = decode(audioData);
-            const audioBuffer = await decodeAudioData(decodedBytes, context, 24000, 1);
-            
-            if (audioSourceRef.current) {
-                audioSourceRef.current.stop();
-            }
-            
-            const source = context.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(context.destination);
-            source.onended = () => {
-                setIsSpeaking(false);
-                audioSourceRef.current = null;
-            };
-            source.start();
-            audioSourceRef.current = source;
-            
-        } catch (err) {
-            console.error(err);
-            setError('Failed to generate or play audio.');
-            setIsSpeaking(false);
-        }
+        audioQueueRef.current = textChunks;
+        playNextInQueue();
     };
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            stopPlayback();
+        }
+    }, [stopPlayback]);
+
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -180,7 +211,7 @@ const InvestmentPredictor: React.FC = () => {
                 <div className="mt-8 animate-fade-in">
                     <div className="flex justify-between items-center mb-4">
                         <h3 className="text-2xl font-bold text-emerald-300">Prediction Results</h3>
-                         <button onClick={handleSpeak} disabled={!prediction || isSpeaking} className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                         <button onClick={handleSpeak} disabled={!prediction} className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                             {isSpeaking ? <><StopIcon /> Stop</> : <><SpeakerIcon /> Speak</>}
                         </button>
                     </div>
