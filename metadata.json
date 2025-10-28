@@ -1,0 +1,5 @@
+{
+  "name": "Finance Advisor",
+  "description": "An advanced financial tool that provides personalized investment recommendations for Mutual Funds, SIPs, and the Share Market, created by Aniket patil. It provides deep analysis, future predictions, and multilingual text-to-speech support.",
+  "requestFramePermissions": []
+}
